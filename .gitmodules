@@ -1,0 +1,6 @@
+[submodule "HF-model-raw"]
+	path = HF-model-raw
+	url = https://huggingface.co/ianro04/PentaGemma
+[submodule "HF-full-demo"]
+	path = HF-full-demo
+	url = https://huggingface.co/spaces/ianro04/PentaGemma
