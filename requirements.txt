@@ -1,0 +1,6 @@
+gradio>=5.0.0
+huggingface_hub
+--extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu
+llama-cpp-python
+pypdf
+python-docx
