@@ -15,7 +15,8 @@ print("Loading model into RAM...")
 llm = Llama(
     model_path=model_path,
     n_ctx=3072, 
-    n_threads=4,  
+    n_threads=2,
+    n_threads_batch=2,
 )
 print("Ready!")
 
@@ -138,7 +139,7 @@ def respond(
                     {"role": "system", "content": PENTA_PROMPT},
                     {"role": "user", "content": map_prompt}
                 ],
-                max_tokens=max_tokens,
+                max_tokens=min(max_tokens, 200),
                 temperature=temperature,
                 top_p=top_p,
                 stream=False 
