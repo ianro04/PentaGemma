@@ -73,9 +73,12 @@ except ImportError:
 
 import pypdf
 import gradio as gr
+from ftfy import TextFixerConfig, fix_text
 from huggingface_hub import hf_hub_download
 from llama_cpp import Llama
 from docx import Document
+
+FTFY_CONFIG = TextFixerConfig(uncurl_quotes=False)
 
 print("Downloading GGUF...")
 model_path = hf_hub_download(
@@ -112,8 +115,8 @@ with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "penta_prompt
 def read_file(file_path): # Alt input method for Space
     if file_path is None:
         return ""
-    if file_path.lower().endswith((".txt", ".md")):
-        with open(file_path, "r", encoding="utf-8") as f:
+    if file_path.lower().endswith((".txt", ".md", ".rtf")):
+        with open(file_path, "r", encoding="utf-8", errors="replace") as f:
             return f.read()
     elif file_path.lower().endswith(".docx"):
         doc = Document(file_path)
@@ -148,7 +151,7 @@ def run(
     file_text = ""
     if files:
         for file_path in files:
-            content = read_file(file_path)
+            content = fix_text(read_file(file_path), config=FTFY_CONFIG)
             if content:
                 file_text += f"\n\n--- Document Uploaded by User ---\n{content}"
 
@@ -274,7 +277,7 @@ chatbot = gr.ChatInterface(
     respond,
     multimodal=True,
     textbox=gr.MultimodalTextbox(
-        file_types=[".pdf", ".docx", ".txt", ".md"],
+        file_types=[".pdf", ".docx", ".txt", ".md", ".rtf"],
         placeholder="Type a message or upload a document to summarize...",
     ),
     additional_inputs=[
@@ -289,7 +292,7 @@ chatbot = gr.ChatInterface(
         ),
     ],
     title="PentaGemma: 5-Sentence Summarizer",
-    description="PentaGemma is a fine-tuned version of Gemma 4 E2B IT, but for 5 sentence text summarization and general obsession with the number 5. Accepts .txt, .md, .docx, .pdf file uploads for summarization. Otherwise usable as a basic chatbot. \nNote: Uses ZeroGPU when available and falls back to CPU, which can be very slow for larger documents.",
+    description="PentaGemma is a fine-tuned version of Gemma 4 E2B IT, but for 5 sentence text summarization and general obsession with the number 5. Accepts .txt, .rtf, .md, .docx, .pdf file uploads for summarization. Otherwise usable as a basic chatbot.<br>Note: Uses ZeroGPU when available and basic CPU as a fallback, which can be <u>very</u> slow for larger documents.",
 )
 
 if __name__ == "__main__":
