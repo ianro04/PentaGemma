@@ -61,7 +61,7 @@ def ensure_llama():
 
 ensure_llama()
 
-def get_duration(message, history, max_tokens, temperature, top_p):
+def get_duration(message, history, max_tokens, temperature, top_p, progress=None):
     return 90 if message.get("files") else 30
 
 try:
@@ -129,12 +129,12 @@ def read_file(file_path): # Alt input method for Space
 def chunk_text(text, max_tokens=2048): # Break down lengthier text into chunks
     tokens = cpu_llm.tokenize(text.encode("utf-8"))
     chunks = []
-    
+
     for i in range(0, len(tokens), max_tokens):
         chunk_tokens = tokens[i : i + max_tokens]
         chunk_text = cpu_llm.detokenize(chunk_tokens).decode("utf-8", errors="ignore")
         chunks.append(chunk_text)
-        
+
     return chunks
 
 def run(
@@ -144,6 +144,7 @@ def run(
     max_tokens,
     temperature,
     top_p,
+    progress,
 ):
     user_text = message.get("text", "")
     files = message.get("files", [])
@@ -177,7 +178,7 @@ def run(
     if len(chunks) == 1: # Summarizing text that fits in a single "chunk"
         final_prompt = user_text if user_text.strip() else "Summarize the following document: "
         final_prompt += file_text
-        
+
         messages = [{"role": "system", "content": PENTA_PROMPT}]
         messages.extend(history)
         messages.append({"role": "user", "content": final_prompt})
@@ -195,17 +196,13 @@ def run(
 
     else:
         # For summarizing lengthier documents by breaking into chunks, summarizing each chunk, then summarizing a concat of the summaries
-        status_updates = "**Processing large document...**\n\n"
-        yield status_updates
-        
+        progress(0, desc="Processing large document...")
+
         intermediate_summaries = []
-        
+
         for i, chunk in enumerate(chunks):
-            status_updates += f"* Summarizing part {i+1} of {len(chunks)}...\n"
-            yield status_updates
-            
+            progress((i, len(chunks)), desc=f"Summarizing part {i+1} of {len(chunks)}")
             map_prompt = f"Summarize the following section of a document in exactly 5 sentences:\n\n{chunk}"
-            
             chunk_response = llm.create_chat_completion(
                 messages=[
                     {"role": "system", "content": PENTA_PROMPT},
@@ -216,22 +213,21 @@ def run(
                 top_p=top_p,
                 stream=False 
             )
-            
+
             summary = chunk_response["choices"][0]["message"]["content"]
             intermediate_summaries.append(summary)
-            
-        status_updates += "\n**All parts summarized. Returning final summary...**\n\n---\n\n"
-        yield status_updates
-        
+
+        progress((len(chunks), len(chunks)), desc="Writing final summary...")
+
         combined_summaries = "\n\n".join(intermediate_summaries)
-        
+
         reduce_instruction = user_text.strip() if user_text.strip() else "Combine the following summaries of different parts of a document into a single, cohesive 5-sentence summary:"
         final_reduce_prompt = f"{reduce_instruction}\n\n--- Intermediate Summaries ---\n{combined_summaries}"
-        
+
         messages = [{"role": "system", "content": PENTA_PROMPT}]
         messages.extend(history)
         messages.append({"role": "user", "content": final_reduce_prompt})
-        
+
         # Final result
         stream = llm.create_chat_completion(
             messages=messages,
@@ -240,8 +236,8 @@ def run(
             top_p=top_p,
             stream=True
         )
-        
-        response = status_updates
+
+        response = ""
         for chunk in stream:
             delta = chunk["choices"][0]["delta"]
             if "content" in delta:
@@ -255,8 +251,9 @@ def respond_gpu(
     max_tokens,
     temperature,
     top_p,
+    progress=gr.Progress(),
 ):
-    yield from run(get_gpu_llm(), message, history, max_tokens, temperature, top_p)
+    yield from run(get_gpu_llm(), message, history, max_tokens, temperature, top_p, progress)
 
 def respond(
     message,
@@ -264,14 +261,15 @@ def respond(
     max_tokens,
     temperature,
     top_p,
+    progress=gr.Progress(),
 ):
     if ON_ZEROGPU:
         try:
-            yield from respond_gpu(message, history, max_tokens, temperature, top_p)
+            yield from respond_gpu(message, history, max_tokens, temperature, top_p, progress)
             return
         except Exception as e:
             print(f"ZeroGPU failed ({e!r}); falling back to CPU")
-    yield from run(cpu_llm, message, history, max_tokens, temperature, top_p)
+    yield from run(cpu_llm, message, history, max_tokens, temperature, top_p, progress)
 
 chatbot = gr.ChatInterface(
     respond,
