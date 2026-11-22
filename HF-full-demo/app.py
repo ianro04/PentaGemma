@@ -1,22 +1,63 @@
 import json
 import os
 import sys
+import ctypes
+import importlib
 import subprocess
+import sysconfig
 
 ON_ZEROGPU = bool(os.environ.get("SPACES_ZERO_GPU"))
+WHEEL_INDEX = "https://abetlen.github.io/llama-cpp-python/whl/"
+
+def pip_install(*args):
+    subprocess.check_call([sys.executable, "-m", "pip", "install", *args])
+
+def install_llama(flavor, force=False):
+    extra = ["--force-reinstall", "--no-deps"] if force else []
+    pip_install(
+        "llama-cpp-python",
+        "--only-binary=llama-cpp-python",
+        "--extra-index-url", WHEEL_INDEX + flavor,
+        *extra,
+    )
+
+def load_cuda_libs():
+    pip_install("nvidia-cuda-runtime-cu12", "nvidia-cublas-cu12")
+    root = os.path.join(sysconfig.get_paths()["purelib"], "nvidia")
+    lib_dirs = [
+        os.path.join(root, "cuda_runtime", "lib"),
+        os.path.join(root, "cublas", "lib"),
+    ]
+    os.environ["LD_LIBRARY_PATH"] = ":".join(
+        lib_dirs + [os.environ.get("LD_LIBRARY_PATH", "")]
+    )
+    for name in ("libcudart.so.12", "libcublasLt.so.12", "libcublas.so.12"):
+        for d in lib_dirs:
+            path = os.path.join(d, name)
+            if os.path.exists(path):
+                ctypes.CDLL(path, mode=ctypes.RTLD_GLOBAL)
 
 def ensure_llama():
+    global ON_ZEROGPU
+    if ON_ZEROGPU:
+        try:
+            install_llama("cu124")
+            load_cuda_libs()
+            import llama_cpp
+            return
+        except Exception as e:
+            # CPU build is the fallback if the CUDA build can't load on ZeroGPU
+            print(f"CUDA llama-cpp-python failed to load ({e!r}); using CPU build instead")
+            ON_ZEROGPU = False
+            for name in [m for m in sys.modules if m.startswith("llama_cpp")]:
+                del sys.modules[name]
+            install_llama("cpu", force=True)
+            importlib.invalidate_caches()
+            return
     try:
         import llama_cpp
-        return
     except ImportError:
-        pass
-    flavor = "cu124" if ON_ZEROGPU else "cpu"
-    subprocess.check_call([
-        sys.executable, "-m", "pip", "install", "llama-cpp-python",
-        "--only-binary=llama-cpp-python",
-        "--extra-index-url", f"https://abetlen.github.io/llama-cpp-python/whl/{flavor}",
-    ])
+        install_llama("cpu")
 
 ensure_llama()
 
