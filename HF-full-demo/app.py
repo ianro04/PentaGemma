@@ -1,3 +1,34 @@
+import os
+import sys
+import subprocess
+
+ON_ZEROGPU = bool(os.environ.get("SPACES_ZERO_GPU"))
+
+def ensure_llama():
+    try:
+        import llama_cpp
+        return
+    except ImportError:
+        pass
+    flavor = "cu124" if ON_ZEROGPU else "cpu"
+    subprocess.check_call([
+        sys.executable, "-m", "pip", "install", "llama-cpp-python",
+        "--only-binary=llama-cpp-python",
+        "--extra-index-url", f"https://abetlen.github.io/llama-cpp-python/whl/{flavor}",
+    ])
+
+ensure_llama()
+
+def get_duration(message, history, max_tokens, temperature, top_p):
+    return 90 if message.get("files") else 30
+
+try:
+    import spaces
+    gpu = spaces.GPU(duration=get_duration)
+except ImportError:
+    def gpu(fn):
+        return fn
+
 import pypdf
 import gradio as gr
 from huggingface_hub import hf_hub_download
@@ -10,15 +41,28 @@ model_path = hf_hub_download(
     filename="gemma-4-e2b-it.Q4_K_S.gguf"
 )
 
-# Load model with CPU
+# Load model with CPU (also the fallback if ZeroGPU is unavailable, out of quota, or fails)
 print("Loading model into RAM...")
-llm = Llama(
+cpu_llm = Llama(
     model_path=model_path,
     n_ctx=3072, 
     n_threads=2,
     n_threads_batch=2,
+    n_gpu_layers=0,
 )
 print("Ready!")
+
+_gpu_llm = None
+
+def get_gpu_llm():
+    global _gpu_llm
+    if _gpu_llm is None:
+        _gpu_llm = Llama(
+            model_path=model_path,
+            n_ctx=3072,
+            n_gpu_layers=-1,
+        )
+    return _gpu_llm
 
 PENTA_PROMPT = ( # Copy-paste from Kaggle, except for last line that's specific to this Gradio app
     "You are a concise yet helpful AI assistant named PentaGemma. This is your core identity, and you introduce yourself as such."
@@ -56,17 +100,18 @@ def read_file(file_path): # Alt input method for Space
     return ""
 
 def chunk_text(text, max_tokens=2048): # Break down lengthier text into chunks
-    tokens = llm.tokenize(text.encode("utf-8"))
+    tokens = cpu_llm.tokenize(text.encode("utf-8"))
     chunks = []
     
     for i in range(0, len(tokens), max_tokens):
         chunk_tokens = tokens[i : i + max_tokens]
-        chunk_text = llm.detokenize(chunk_tokens).decode("utf-8", errors="ignore")
+        chunk_text = cpu_llm.detokenize(chunk_tokens).decode("utf-8", errors="ignore")
         chunks.append(chunk_text)
         
     return chunks
 
-def respond(
+def run(
+    llm,
     message,
     history: list[dict[str, str]],
     max_tokens,
@@ -176,6 +221,31 @@ def respond(
                 response += delta["content"]
                 yield response
 
+@gpu
+def respond_gpu(
+    message,
+    history: list[dict[str, str]],
+    max_tokens,
+    temperature,
+    top_p,
+):
+    yield from run(get_gpu_llm(), message, history, max_tokens, temperature, top_p)
+
+def respond(
+    message,
+    history: list[dict[str, str]],
+    max_tokens,
+    temperature,
+    top_p,
+):
+    if ON_ZEROGPU:
+        try:
+            yield from respond_gpu(message, history, max_tokens, temperature, top_p)
+            return
+        except Exception as e:
+            print(f"ZeroGPU failed ({e!r}); falling back to CPU")
+    yield from run(cpu_llm, message, history, max_tokens, temperature, top_p)
+
 chatbot = gr.ChatInterface(
     respond,
     multimodal=True,
@@ -195,7 +265,7 @@ chatbot = gr.ChatInterface(
         ),
     ],
     title="PentaGemma: 5-Sentence Summarizer",
-    description="PentaGemma is a fine-tuned version of Gemma 4 E2B IT, but for 5 sentence text summarization and general obsession with the number 5. Accepts .txt, .md, .docx, .pdf file uploads for summarization. Otherwise usable as a basic chatbot. \nNote: Runs solely on CPU in this Space, so can be very slow for larger documents.",
+    description="PentaGemma is a fine-tuned version of Gemma 4 E2B IT, but for 5 sentence text summarization and general obsession with the number 5. Accepts .txt, .md, .docx, .pdf file uploads for summarization. Otherwise usable as a basic chatbot. \nNote: Uses ZeroGPU when available and falls back to CPU, which can be very slow for larger documents.",
 )
 
 if __name__ == "__main__":
