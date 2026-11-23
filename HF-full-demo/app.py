@@ -117,7 +117,7 @@ with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "penta_prompt
 def read_file(file_path): # Alt input method for Space
     if file_path is None:
         return ""
-    target_suffix = Path(target_path).suffix.lower()
+    target_suffix = Path(file_path).suffix.lower()
     if target_suffix in {".txt", ".md"}:
         with open(file_path, "r", encoding="utf-8", errors="replace") as f:
             return f.read()
