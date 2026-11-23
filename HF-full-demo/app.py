@@ -73,10 +73,12 @@ except ImportError:
 
 import pypdf
 import gradio as gr
+from docx import Document
 from ftfy import TextFixerConfig, fix_text
 from huggingface_hub import hf_hub_download
 from llama_cpp import Llama
-from docx import Document
+from pathlib import Path
+from striprtf.striprtf import rtf_to_text
 
 FTFY_CONFIG = TextFixerConfig(uncurl_quotes=False)
 
@@ -115,13 +117,17 @@ with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "penta_prompt
 def read_file(file_path): # Alt input method for Space
     if file_path is None:
         return ""
-    if file_path.lower().endswith((".txt", ".md", ".rtf")):
+    target_suffix = Path(target_path).suffix.lower()
+    if target_suffix in {".txt", ".md"}:
         with open(file_path, "r", encoding="utf-8", errors="replace") as f:
             return f.read()
-    elif file_path.lower().endswith(".docx"):
+    elif target_suffix == ".rtf":
+        with open(file_path, "r", encoding="utf-8", errors="replace") as f:
+            return rtf_to_text(f.read())
+    elif target_suffix == ".docx":
         doc = Document(file_path)
         return "\n".join([p.text for p in doc.paragraphs])
-    elif file_path.lower().endswith(".pdf"):
+    elif target_suffix == ".pdf":
         reader = pypdf.PdfReader(file_path)
         return "\n".join([page.extract_text() or "" for page in reader.pages])
     return ""

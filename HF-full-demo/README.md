@@ -1,6 +1,6 @@
 ---
 title: PentaGemma
-emoji: 💬
+emoji: 5️⃣
 colorFrom: yellow
 colorTo: purple
 sdk: gradio
