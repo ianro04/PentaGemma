@@ -5,6 +5,7 @@ import ctypes
 import importlib
 import subprocess
 import sysconfig
+import traceback
 
 ON_ZEROGPU = bool(os.environ.get("SPACES_ZERO_GPU"))
 WHEEL_INDEX = "https://abetlen.github.io/llama-cpp-python/whl/"
@@ -48,6 +49,7 @@ def ensure_llama():
         except Exception as e:
             # CPU build is the fallback if the CUDA build can't load on ZeroGPU
             print(f"CUDA llama-cpp-python failed to load ({e!r}); using CPU build instead")
+            traceback.print_exc()
             ON_ZEROGPU = False
             for name in [m for m in sys.modules if m.startswith("llama_cpp")]:
                 del sys.modules[name]
@@ -62,7 +64,7 @@ def ensure_llama():
 ensure_llama()
 
 def get_duration(message, history, max_tokens, temperature, top_p, progress=None):
-    return 90 if message.get("files") else 30
+    return 60 if message.get("files") else 20
 
 try:
     import spaces
@@ -73,6 +75,7 @@ except ImportError:
 
 import pypdf
 import gradio as gr
+import llama_cpp
 from docx import Document
 from ftfy import TextFixerConfig, fix_text
 from huggingface_hub import hf_hub_download
@@ -88,26 +91,39 @@ model_path = hf_hub_download(
     filename="gemma-4-e2b-it.Q4_K_S.gguf"
 )
 
+_cpu_llm = None
+
 # Load model with CPU (also the fallback if ZeroGPU is unavailable, out of quota, or fails)
-print("Loading model into RAM...")
-cpu_llm = Llama(
-    model_path=model_path,
-    n_ctx=3072, 
-    n_threads=2,
-    n_threads_batch=2,
-    n_gpu_layers=0,
-)
-print("Ready!")
+def get_cpu_llm():
+    global _cpu_llm
+    if _cpu_llm is None:
+        print("Loading CPU model into RAM...", flush=True)
+        _cpu_llm = Llama(
+            model_path=model_path,
+            n_ctx=3072, 
+            n_threads=2,
+            n_threads_batch=2,
+            n_gpu_layers=0,
+        )
+        print("CPU model ready", flush=True)
+    return _cpu_llm
 
 _gpu_llm = None
 
 def get_gpu_llm():
     global _gpu_llm
     if _gpu_llm is None:
+        print("GPU worker: loading model", flush=True)
         _gpu_llm = Llama(
             model_path=model_path,
             n_ctx=3072,
             n_gpu_layers=-1,
+            verbose=True,
+        )
+        print(
+            "GPU worker: model loaded, offload supported =",
+            llama_cpp.llama_supports_gpu_offload(),
+            flush=True,
         )
     return _gpu_llm
 
@@ -132,13 +148,13 @@ def read_file(file_path): # Alt input method for Space
         return "\n".join([page.extract_text() or "" for page in reader.pages])
     return ""
 
-def chunk_text(text, max_tokens=2048): # Break down lengthier text into chunks
-    tokens = cpu_llm.tokenize(text.encode("utf-8"))
+def chunk_text(llm, text, max_tokens=2048): # Break down lengthier text into chunks
+    tokens = llm.tokenize(text.encode("utf-8"))
     chunks = []
 
     for i in range(0, len(tokens), max_tokens):
         chunk_tokens = tokens[i : i + max_tokens]
-        chunk_text = cpu_llm.detokenize(chunk_tokens).decode("utf-8", errors="ignore")
+        chunk_text = llm.detokenize(chunk_tokens).decode("utf-8", errors="ignore")
         chunks.append(chunk_text)
 
     return chunks
@@ -179,7 +195,7 @@ def run(
                 yield response
         return
 
-    chunks = chunk_text(file_text)
+    chunks = chunk_text(llm, file_text)
 
     if len(chunks) == 1: # Summarizing text that fits in a single "chunk"
         final_prompt = user_text if user_text.strip() else "Summarize the following document: "
@@ -259,7 +275,13 @@ def respond_gpu(
     top_p,
     progress=gr.Progress(),
 ):
-    yield from run(get_gpu_llm(), message, history, max_tokens, temperature, top_p, progress)
+    print("GPU worker: task started", flush=True)
+    try:
+        yield from run(get_gpu_llm(), message, history, max_tokens, temperature, top_p, progress)
+    except Exception:
+        traceback.print_exc()
+        sys.stderr.flush()
+        raise
 
 def respond(
     message,
@@ -275,7 +297,8 @@ def respond(
             return
         except Exception as e:
             print(f"ZeroGPU failed ({e!r}); falling back to CPU")
-    yield from run(cpu_llm, message, history, max_tokens, temperature, top_p, progress)
+            traceback.print_exc()
+    yield from run(get_cpu_llm(), message, history, max_tokens, temperature, top_p, progress)
 
 chatbot = gr.ChatInterface(
     respond,
